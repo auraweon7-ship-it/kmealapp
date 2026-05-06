@@ -1,0 +1,16 @@
+{
+  "name": "kmeal-app",
+  "version": "1.7.0",
+  "description": "급식 어때? — 전국 학교급식 통합 플랫폼",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  }
+}
