@@ -4288,58 +4288,13 @@ function ScreenMap() {
     mapInstance.current.setZoom(targetZoom);
   };
 
-  // 5) 자치구 경계 GeoJSON 레이어
+  // 5) 자치구 경계 GeoJSON 레이어 — 비활성화 (사용자 요청으로 삭제)
+  // 이전 캐시·데이터 레이어가 남아있으면 모두 제거
   React.useEffect(() => {
     if (!mapInstance.current || !mapsReady) return;
-    let cancelled = false;
-    const cacheKey = 'kr:districts:geo:v1';
-    const ttlMs = 30 * 24 * 60 * 60 * 1000;
-
-    const loadGeo = async () => {
-      const cached = window.cacheGet(cacheKey, ttlMs);
-      if (cached) return cached;
-      const sources = [
-        'https://raw.githubusercontent.com/southkorea/southkorea-maps/master/kostat/2013/json/skorea_municipalities_geo_simple.json',
-        'https://corsproxy.io/?' + encodeURIComponent('https://raw.githubusercontent.com/southkorea/southkorea-maps/master/kostat/2013/json/skorea_municipalities_geo_simple.json'),
-      ];
-      for (const url of sources) {
-        try {
-          const r = await fetch(url);
-          if (!r.ok) continue;
-          const j = await r.json();
-          if (j && j.features && j.features.length) { window.cacheSet(cacheKey, j); return j; }
-        } catch (e) {}
-      }
-      return null;
-    };
-
-    const draw = (geo) => {
-      if (cancelled || !mapInstance.current) return;
-      const map = mapInstance.current;
-      // 기존 데이터 레이어 제거
-      map.data.forEach(f => map.data.remove(f));
-      if (!geo) return;
-      map.data.addGeoJson(geo);
-      const accent = tweaks.headerColor || '#0066FF';
-      map.data.setStyle(feature => {
-        const name = feature.getProperty('name') || feature.getProperty('SIG_KOR_NM') || '';
-        const isSelected = filter.district !== '전체' && name === filter.district;
-        if (isSelected) {
-          return { strokeColor: accent, strokeWeight: 2.5, strokeOpacity: 0.9, fillColor: accent, fillOpacity: 0.14, clickable: false };
-        }
-        return { strokeColor: tweaks.dark ? '#888' : '#666', strokeWeight: 0.8, strokeOpacity: 0.55, fillOpacity: 0, clickable: false };
-      });
-    };
-
-    if (boundaryGeoRef.current) draw(boundaryGeoRef.current);
-    else loadGeo().then(geo => {
-      if (cancelled) return;
-      boundaryGeoRef.current = geo;
-      draw(geo);
-    });
-
-    return () => { cancelled = true; };
-  }, [mapsReady, filter.district, province.code, tweaks.dark, tweaks.headerColor]);
+    const map = mapInstance.current;
+    try { map.data.forEach(f => map.data.remove(f)); } catch {}
+  }, [mapsReady]);
 
   // 6) GIS 격차 모드 — 자치구별 컬러 원형
   React.useEffect(() => {
