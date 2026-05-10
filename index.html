@@ -13,8 +13,25 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
 <meta name="mobile-web-app-capable" content="yes" />
 <title>급식 어때? — 인터랙티브 프로토타입</title>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="anonymous" />
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js" integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin="anonymous"></script>
+<!-- Google Maps JavaScript API (학교알리미 + NEIS 통합 좌표 기반 정확한 학교 위치) -->
+<script>
+  // Google Maps lazy loader
+  window.GOOGLE_MAPS_API_KEY = 'AIzaSyBpEN79WD3IRpzZ9LngdW-IKVYCImlmEPo';
+  window.__gmapsPromise = null;
+  window.loadGoogleMaps = function() {
+    if (window.google && window.google.maps) return Promise.resolve(window.google.maps);
+    if (window.__gmapsPromise) return window.__gmapsPromise;
+    window.__gmapsPromise = new Promise((resolve, reject) => {
+      window.__onGmapsLoaded = () => resolve(window.google.maps);
+      const s = document.createElement('script');
+      s.src = `https://maps.googleapis.com/maps/api/js?key=${window.GOOGLE_MAPS_API_KEY}&v=weekly&libraries=geometry&callback=__onGmapsLoaded&language=ko&region=KR`;
+      s.async = true; s.defer = true;
+      s.onerror = reject;
+      document.head.appendChild(s);
+    });
+    return window.__gmapsPromise;
+  };
+</script>
 <style>
 /* =========================================================
    Wanted Design System — Tokens
@@ -178,9 +195,11 @@ body { background: #0a0a0a; margin: 0; font-family: var(--font-sans); min-height
 }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .device-stage { position: relative; }
-.leaflet-container { font-family: var(--font-sans); }
-.leaflet-tooltip { background: rgba(28,28,30,0.92); color: #fff; border: none; font-weight: 700; font-size: 11px; padding: 4px 8px; border-radius: 6px; }
-.leaflet-tooltip-top:before { border-top-color: rgba(28,28,30,0.92); }
+/* Google Maps 커스텀 마커 스타일 */
+.gmap-marker { position:absolute; transform:translate(-50%,-50%); cursor:pointer; }
+.gmap-marker-label { position:absolute; top:100%; left:50%; transform:translateX(-50%); margin-top:3px; padding:2px 7px; border-radius:5px; font-size:10px; font-weight:700; white-space:nowrap; box-shadow:0 1px 4px rgba(0,0,0,0.18); pointer-events:none; }
+.gmap-tooltip { position:absolute; transform:translate(-50%, calc(-100% - 8px)); background:rgba(28,28,30,0.92); color:#fff; font-weight:700; font-size:11px; padding:4px 8px; border-radius:6px; white-space:nowrap; pointer-events:none; }
+.gm-style-iw { font-family: var(--font-sans) !important; }
 
 /* App-specific */
 .menu-chip { display: inline-flex; align-items: center; gap: 4px; padding: 6px 10px; border-radius: 8px; background: var(--color-neutral-100); font-size: 13px; font-weight: 500; color: var(--color-neutral-1000); letter-spacing: -0.01em; }
@@ -275,8 +294,8 @@ window.cacheSet = function(key, v) {
 // 이전 버전들이 가짜 학교 폴백 데이터를 그대로 캐시했을 가능성 차단
 (function purgeStaleSchoolCaches() {
   try {
-    const STALE_PREFIXES = ['neis:schools:', 'kmeal:schools:'];
-    const STALE_SUFFIXES = [':v1', ':v2', ':v3', ':v4', ':v5', ':v6', ':v7']; // v8부터 OSM 정적 JSON 1차
+    const STALE_PREFIXES = ['neis:schools:', 'kmeal:schools:', 'odata:schools:'];
+    const STALE_SUFFIXES = [':v1', ':v2', ':v3', ':v4', ':v5', ':v6', ':v7', ':v8', ':v9']; // v10gmaps부터 Google Geocoding 보정본
     const toRemove = [];
     for (let i = 0; i < localStorage.length; i++) {
       const k = localStorage.key(i);
@@ -461,8 +480,8 @@ async function fetchSchoolsFromOpenData(officeCode) {
   const siNm = window.OFFICE_TO_SI[officeCode];
   if (!siNm) return [];
 
-  const cacheKey  = `odata:schools:${officeCode}:v2`;
-  const backupKey = `odata:schools:${officeCode}:v2:backup`;
+  const cacheKey  = `odata:schools:${officeCode}:v4gmaps`;
+  const backupKey = `odata:schools:${officeCode}:v4gmaps:backup`;
   const cached = window.cacheGet(cacheKey, 24 * 60 * 60 * 1000);
   if (cached) return cached;
 
@@ -579,15 +598,16 @@ async function fetchProvinceSchools(officeCode, { maxPages = 5 } = {}) {
   // v8 — OSM(OpenStreetMap) 사전 빌드 정적 JSON을 1차 소스로 사용
   // 빌드 스크립트: build_schools_data.js (12,442개 학교 좌표)
   // 정적 파일이라 CORS·API키 문제 없음, 즉시 로드
-  const cacheKey   = `neis:schools:${officeCode}:v8`;
-  const backupKey  = `neis:schools:${officeCode}:v8:backup`;
+  const cacheKey   = `neis:schools:${officeCode}:v10gmaps`;
+  const backupKey  = `neis:schools:${officeCode}:v10gmaps:backup`;
   const cached = window.cacheGet(cacheKey, 24 * 60 * 60 * 1000);
   if (cached) return cached;
 
   // ━━━ 1차 ⭐ 정적 JSON (OSM 기반, 좌표 100% 정확) ━━━
   try {
     const t0 = Date.now();
-    const r = await fetch(`./data/schools-${officeCode}.json`, { cache: 'force-cache' });
+    // v=gmaps2026 — Google Geocoding 보정본 (HTTP 캐시 무효화)
+    const r = await fetch(`./data/schools-${officeCode}.json?v=gmaps2026`, { cache: 'no-cache' });
     if (r.ok) {
       const list = await r.json();
       if (Array.isArray(list) && list.length) {
@@ -2069,7 +2089,7 @@ window.autoTranslator = {
   busy: false,
   scheduled: null,
   HANGUL: /[가-힯ᄀ-ᇿ㄰-㆏]/,
-  SKIP_SEL: 'script,style,noscript,.leaflet-container,.no-translate,svg',
+  SKIP_SEL: 'script,style,noscript,.gm-style,.no-translate,svg',
 
   init() {
     try { this.cache = JSON.parse(localStorage.getItem('gs:trans-cache') || '{}'); } catch {}
@@ -4058,15 +4078,17 @@ function ScreenMap() {
   const { schools, dataMode, navigate, filter, setFilter, tweaks, province, setProvince, myRegion, setVoiceOpen, retryFetchSchools } = useApp();
   const mapRef = React.useRef(null);
   const mapInstance = React.useRef(null);
-  const markerLayerRef = React.useRef(null);
-  const gisLayerRef = React.useRef(null);
-  const boundaryLayerRef = React.useRef(null);   // 자치구 경계 GeoJSON 레이어
-  const boundaryGeoRef = React.useRef(null);      // 캐시된 GeoJSON 데이터
+  const markersRef = React.useRef([]);     // OverlayView 마커 배열
+  const gisCirclesRef = React.useRef([]);  // 자치구 GIS 원형
+  const gisLabelsRef = React.useRef([]);   // 자치구 라벨 OverlayView
+  const boundaryDataRef = React.useRef(null); // map.data feature 캐시
+  const boundaryGeoRef = React.useRef(null);  // GeoJSON 원본
   const headerColor = tweaks.headerColor || '#0066FF';
   const [districtOpen, setDistrictOpen] = React.useState(false);
   const [provinceOpen, setProvinceOpen] = React.useState(false);
   const [gisMode, setGisMode] = React.useState(false);
   const [gisDistrict, setGisDistrict] = React.useState(null);
+  const [mapsReady, setMapsReady] = React.useState(false);
   const regionAppliedRef = React.useRef(false);
 
   // 자치구별 통계 집계 (GIS 격차 분석용)
@@ -4084,13 +4106,11 @@ function ScreenMap() {
       const avgLat = g.lats.reduce((a,b)=>a+b,0) / g.lats.length;
       const avgLng = g.lngs.reduce((a,b)=>a+b,0) / g.lngs.length;
       const avgScore = g.schools.reduce((s,sc)=>s+sc.score,0) / g.schools.length;
-      // 학생 수 합산
-      // 결정적 의사 인구통계 (실데이터 미가용 — 자치구명 시드)
       let h = 0; for (let i=0;i<name.length;i++) h=(h*31+name.charCodeAt(i))>>>0;
-      const multiPct = 3 + (h % 12);          // 다문화 학생 비율 3~15%
-      const freeMealPct = 35 + (h % 45);      // 무상급식 비율 35~80%
-      const i18nPct = (h % 30);                // 다국어 메뉴 표시 비율 0~30% (대부분 사각지대)
-      const allergyPct = 2 + (h % 5);          // 알레르기 학생 비율 2~7%
+      const multiPct = 3 + (h % 12);
+      const freeMealPct = 35 + (h % 45);
+      const i18nPct = (h % 30);
+      const allergyPct = 2 + (h % 5);
       const kindCount = { 초:0, 중:0, 고:0, 기타:0 };
       g.schools.forEach(s => {
         if (!s.kind) kindCount.기타++;
@@ -4103,41 +4123,11 @@ function ScreenMap() {
         district: name, lat: avgLat, lng: avgLng,
         schoolCount: g.schools.length,
         avgScore: Math.round(avgScore * 10) / 10,
-        kindCount,
-        multiPct, freeMealPct, i18nPct, allergyPct,
+        kindCount, multiPct, freeMealPct, i18nPct, allergyPct,
         schools: g.schools,
       };
     }).sort((a,b) => a.avgScore - b.avgScore);
   }, [schools]);
-
-  // 내 지역 자동 반영 — 지도 마운트 시 myRegion이 있으면 시도 + 자치구 자동 설정
-  React.useEffect(() => {
-    if (regionAppliedRef.current || !myRegion) return;
-    // 1단계: 시도 동기화
-    if (myRegion.provinceCode !== province.code) {
-      const p = window.PROVINCES.find(p => p.code === myRegion.provinceCode);
-      if (p) setProvince(p);
-      return;
-    }
-    // 2단계: 학교 데이터 로드 대기
-    if (!schools || schools.length === 0) return;
-    // 3단계: 자치구 필터 적용
-    if (filter.district !== myRegion.districtName) {
-      setFilter({ ...filter, district: myRegion.districtName, kind: '전체' });
-    }
-    // 4단계: 고정 줌(13)으로 자치구 중앙 자동 이동 — 모든 자치구 동일 스케일
-    if (mapInstance.current && window.L) {
-      const inDistrict = schools.filter(s => s.district === myRegion.districtName);
-      if (inDistrict.length) {
-        const lat = inDistrict.reduce((s,x)=>s+x.lat, 0) / inDistrict.length;
-        const lng = inDistrict.reduce((s,x)=>s+x.lng, 0) / inDistrict.length;
-        const isProvinceArea = ['J10','K10','M10','N10','P10','Q10','R10','S10'].includes(province.code);
-        const targetZoom = isProvinceArea ? 12 : 13;
-        mapInstance.current.flyTo([lat, lng], targetZoom, { duration: 0.8 });
-        regionAppliedRef.current = true;
-      }
-    }
-  }, [myRegion, province.code, schools]);
 
   // 자치구 목록
   const districts = React.useMemo(() => {
@@ -4148,12 +4138,130 @@ function ScreenMap() {
     return [['전체', schools.length], ...list];
   }, [schools]);
 
-  // 시도가 바뀌면 지도 중심을 해당 시도로 이동
-  React.useEffect(() => {
-    if (mapInstance.current && province) {
-      mapInstance.current.flyTo(province.center, province.zoom, { duration: 0.8 });
+  // Google Maps 다크/라이트 스타일
+  const getMapStyles = React.useCallback((dark) => {
+    if (!dark) return [
+      { featureType:'poi', stylers:[{ visibility:'off' }]},
+      { featureType:'transit', stylers:[{ visibility:'off' }]},
+    ];
+    return [
+      { elementType:'geometry', stylers:[{ color:'#1c1c1e' }]},
+      { elementType:'labels.text.stroke', stylers:[{ color:'#1c1c1e' }]},
+      { elementType:'labels.text.fill', stylers:[{ color:'#cfcfd2' }]},
+      { featureType:'poi', stylers:[{ visibility:'off' }]},
+      { featureType:'transit', stylers:[{ visibility:'off' }]},
+      { featureType:'road', elementType:'geometry', stylers:[{ color:'#2c2c2e' }]},
+      { featureType:'road', elementType:'labels.text.fill', stylers:[{ color:'#9c9ca0' }]},
+      { featureType:'water', elementType:'geometry', stylers:[{ color:'#0e0e10' }]},
+      { featureType:'water', elementType:'labels.text.fill', stylers:[{ color:'#5a5a5e' }]},
+      { featureType:'administrative', elementType:'geometry.stroke', stylers:[{ color:'#3a3a3c' }]},
+    ];
+  }, []);
+
+  // OverlayView HTML 마커 클래스 (lazy 정의 — Maps API 로드 후)
+  const HtmlMarkerCtorRef = React.useRef(null);
+  const ensureHtmlMarkerCtor = React.useCallback((gmaps) => {
+    if (HtmlMarkerCtorRef.current) return HtmlMarkerCtorRef.current;
+    class HtmlMarker extends gmaps.OverlayView {
+      constructor({ position, html, anchor='center', onClick, onHover }) {
+        super();
+        this.position = position;
+        this.html = html;
+        this.anchor = anchor;
+        this.onClick = onClick;
+        this.onHover = onHover;
+        this.div = null;
+      }
+      onAdd() {
+        const div = document.createElement('div');
+        div.className = 'gmap-marker';
+        div.innerHTML = this.html;
+        if (this.anchor === 'pin-bottom') div.style.transform = 'translate(-50%, -100%)';
+        if (this.onClick) div.addEventListener('click', (e) => { e.stopPropagation(); this.onClick(); });
+        if (this.onHover) {
+          div.addEventListener('mouseenter', () => this.onHover(true));
+          div.addEventListener('mouseleave', () => this.onHover(false));
+        }
+        this.div = div;
+        const panes = this.getPanes();
+        if (panes && panes.overlayMouseTarget) panes.overlayMouseTarget.appendChild(div);
+      }
+      draw() {
+        if (!this.div) return;
+        const proj = this.getProjection();
+        if (!proj) return;
+        const p = proj.fromLatLngToDivPixel(new gmaps.LatLng(this.position.lat, this.position.lng));
+        if (!p) return;
+        this.div.style.left = p.x + 'px';
+        this.div.style.top = p.y + 'px';
+      }
+      onRemove() {
+        if (this.div) { this.div.remove(); this.div = null; }
+      }
     }
+    HtmlMarkerCtorRef.current = HtmlMarker;
+    return HtmlMarker;
+  }, []);
+
+  // 1) Google Maps 초기화
+  React.useEffect(() => {
+    if (!mapRef.current || mapInstance.current) return;
+    let cancelled = false;
+    window.loadGoogleMaps().then(gmaps => {
+      if (cancelled || !mapRef.current) return;
+      const map = new gmaps.Map(mapRef.current, {
+        center: { lat: province?.center?.[0] || 37.5665, lng: province?.center?.[1] || 126.9780 },
+        zoom: province?.zoom || 11,
+        minZoom: 6, maxZoom: 19,
+        disableDefaultUI: true,
+        clickableIcons: false,
+        gestureHandling: 'greedy',
+        styles: getMapStyles(tweaks.dark),
+        mapTypeId: 'roadmap',
+      });
+      mapInstance.current = map;
+      ensureHtmlMarkerCtor(gmaps);
+      setMapsReady(true);
+    }).catch(err => console.error('[GMaps] load failed:', err));
+    return () => { cancelled = true; };
+  }, []);
+
+  // 2) 다크모드 변경 → 스타일 재적용
+  React.useEffect(() => {
+    if (!mapInstance.current) return;
+    mapInstance.current.setOptions({ styles: getMapStyles(tweaks.dark) });
+  }, [tweaks.dark, getMapStyles]);
+
+  // 3) 시도 변경 → 지도 중심 이동
+  React.useEffect(() => {
+    if (!mapInstance.current || !province) return;
+    mapInstance.current.panTo({ lat: province.center[0], lng: province.center[1] });
+    mapInstance.current.setZoom(province.zoom || 11);
   }, [province?.code]);
+
+  // 4) 내 지역 자동 반영
+  React.useEffect(() => {
+    if (regionAppliedRef.current || !myRegion) return;
+    if (myRegion.provinceCode !== province.code) {
+      const p = window.PROVINCES.find(p => p.code === myRegion.provinceCode);
+      if (p) setProvince(p);
+      return;
+    }
+    if (!schools || schools.length === 0 || !mapInstance.current) return;
+    if (filter.district !== myRegion.districtName) {
+      setFilter({ ...filter, district: myRegion.districtName, kind: '전체' });
+    }
+    const inDistrict = schools.filter(s => s.district === myRegion.districtName);
+    if (inDistrict.length) {
+      const lat = inDistrict.reduce((s,x)=>s+x.lat, 0) / inDistrict.length;
+      const lng = inDistrict.reduce((s,x)=>s+x.lng, 0) / inDistrict.length;
+      const isProvinceArea = ['J10','K10','M10','N10','P10','Q10','R10','S10'].includes(province.code);
+      const targetZoom = isProvinceArea ? 12 : 13;
+      mapInstance.current.panTo({ lat, lng });
+      mapInstance.current.setZoom(targetZoom);
+      regionAppliedRef.current = true;
+    }
+  }, [myRegion, province.code, schools]);
 
   const selectProvince = (p) => {
     setProvince(p);
@@ -4162,62 +4270,34 @@ function ScreenMap() {
   };
 
   const focusDistrict = (name) => {
-    // 자치구 선택 시 학교급 필터를 '전체'로 초기화 → 초·중·고 모두 표시
     setFilter({ ...filter, district: name, kind: '전체' });
     setDistrictOpen(false);
     if (!mapInstance.current || !schools) return;
     if (name === '전체') {
-      mapInstance.current.flyTo(province.center, province.zoom, { duration: 0.8 });
+      mapInstance.current.panTo({ lat: province.center[0], lng: province.center[1] });
+      mapInstance.current.setZoom(province.zoom || 11);
       return;
     }
     const inDistrict = schools.filter(s => s.district === name);
     if (!inDistrict.length) return;
-    // 자치구 학교 평균 좌표를 중심으로 고정 줌(13)으로 이동 — 모든 자치구 동일 스케일
     const lat = inDistrict.reduce((s,x)=>s+x.lat, 0) / inDistrict.length;
     const lng = inDistrict.reduce((s,x)=>s+x.lng, 0) / inDistrict.length;
-    // 도 단위 시·군은 더 넓게 (zoom 12), 광역시 자치구·시는 zoom 13
     const isProvinceArea = ['J10','K10','M10','N10','P10','Q10','R10','S10'].includes(province.code);
     const targetZoom = isProvinceArea ? 12 : 13;
-    mapInstance.current.flyTo([lat, lng], targetZoom, { duration: 0.8 });
+    mapInstance.current.panTo({ lat, lng });
+    mapInstance.current.setZoom(targetZoom);
   };
 
+  // 5) 자치구 경계 GeoJSON 레이어
   React.useEffect(() => {
-    if (!mapRef.current || mapInstance.current || !window.L) return;
-    const L = window.L;
-    const map = L.map(mapRef.current, {
-      center: province?.center || [37.5665,126.9780],
-      zoom: province?.zoom || 11,
-      minZoom: 6, maxZoom: 18,
-      zoomControl: false,           // 커스텀 버튼으로 대체
-      attributionControl: false,
-      scrollWheelZoom: true,        // 마우스 휠 줌 활성화
-      doubleClickZoom: true,
-      touchZoom: true,              // 모바일 핀치 줌
-      tap: true,
-    });
-    mapInstance.current = map;
-    const tileUrl = tweaks.dark ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png' : 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png';
-    L.tileLayer(tileUrl, { maxZoom:19, subdomains:'abc' }).addTo(map);
-    return () => { map.remove(); mapInstance.current = null; };
-  }, [tweaks.dark]);
-
-  // ─────────────────────────────────────────────────────────────
-  // 자치구 경계선 GeoJSON 레이어 (선택 자치구 하이라이트)
-  // 출처: kostat 2013 행정구역 (오픈데이터)
-  // ─────────────────────────────────────────────────────────────
-  React.useEffect(() => {
-    if (!mapInstance.current || !window.L) return;
-    const L = window.L;
+    if (!mapInstance.current || !mapsReady) return;
     let cancelled = false;
-
     const cacheKey = 'kr:districts:geo:v1';
-    const ttlMs = 30 * 24 * 60 * 60 * 1000; // 30일
+    const ttlMs = 30 * 24 * 60 * 60 * 1000;
 
     const loadGeo = async () => {
-      // 캐시 확인
       const cached = window.cacheGet(cacheKey, ttlMs);
       if (cached) return cached;
-      // GitHub raw — 전국 시군구 단순화 GeoJSON (~600KB)
       const sources = [
         'https://raw.githubusercontent.com/southkorea/southkorea-maps/master/kostat/2013/json/skorea_municipalities_geo_simple.json',
         'https://corsproxy.io/?' + encodeURIComponent('https://raw.githubusercontent.com/southkorea/southkorea-maps/master/kostat/2013/json/skorea_municipalities_geo_simple.json'),
@@ -4227,154 +4307,102 @@ function ScreenMap() {
           const r = await fetch(url);
           if (!r.ok) continue;
           const j = await r.json();
-          if (j && j.features && j.features.length) {
-            window.cacheSet(cacheKey, j);
-            return j;
-          }
-        } catch (e) { /* 다음 소스 시도 */ }
+          if (j && j.features && j.features.length) { window.cacheSet(cacheKey, j); return j; }
+        } catch (e) {}
       }
       return null;
     };
 
     const draw = (geo) => {
       if (cancelled || !mapInstance.current) return;
-      // 기존 레이어 제거
-      if (boundaryLayerRef.current) {
-        try { boundaryLayerRef.current.remove(); } catch {}
-        boundaryLayerRef.current = null;
-      }
+      const map = mapInstance.current;
+      // 기존 데이터 레이어 제거
+      map.data.forEach(f => map.data.remove(f));
       if (!geo) return;
-
+      map.data.addGeoJson(geo);
       const accent = tweaks.headerColor || '#0066FF';
-      const layer = L.geoJSON(geo, {
-        interactive: false, // 마커 클릭 방해 안 함
-        style: feature => {
-          const name = feature.properties?.name || feature.properties?.SIG_KOR_NM || '';
-          const isSelected = filter.district !== '전체' && name === filter.district;
-          // 시도별 필터 — 다른 시도는 흐리게
-          const inProvince = window.OFFICE_TO_SI?.[province.code]
-            ? name && (feature.properties?.code?.toString().startsWith(province.code.replace(/\d+$/, '')) ||
-                       (feature.properties?.name_eng || '').length > 0) // best-effort
-            : true;
-          if (isSelected) {
-            return {
-              color: accent,
-              weight: 2.5,
-              opacity: 0.9,
-              fillColor: accent,
-              fillOpacity: 0.14,
-              dashArray: null,
-            };
-          }
-          return {
-            color: tweaks.dark ? '#888' : '#666',
-            weight: 0.8,
-            opacity: 0.55,
-            fillColor: 'transparent',
-            fillOpacity: 0,
-            dashArray: '4 3',
-          };
-        },
+      map.data.setStyle(feature => {
+        const name = feature.getProperty('name') || feature.getProperty('SIG_KOR_NM') || '';
+        const isSelected = filter.district !== '전체' && name === filter.district;
+        if (isSelected) {
+          return { strokeColor: accent, strokeWeight: 2.5, strokeOpacity: 0.9, fillColor: accent, fillOpacity: 0.14, clickable: false };
+        }
+        return { strokeColor: tweaks.dark ? '#888' : '#666', strokeWeight: 0.8, strokeOpacity: 0.55, fillOpacity: 0, clickable: false };
       });
-      layer.addTo(mapInstance.current);
-      // 경계선은 마커보다 아래
-      if (layer.bringToBack) layer.bringToBack();
-      boundaryLayerRef.current = layer;
     };
 
-    if (boundaryGeoRef.current) {
-      draw(boundaryGeoRef.current);
-    } else {
-      loadGeo().then(geo => {
-        if (cancelled) return;
-        boundaryGeoRef.current = geo;
-        draw(geo);
-      });
-    }
+    if (boundaryGeoRef.current) draw(boundaryGeoRef.current);
+    else loadGeo().then(geo => {
+      if (cancelled) return;
+      boundaryGeoRef.current = geo;
+      draw(geo);
+    });
 
     return () => { cancelled = true; };
-  }, [filter.district, province.code, tweaks.dark, tweaks.headerColor]);
+  }, [mapsReady, filter.district, province.code, tweaks.dark, tweaks.headerColor]);
 
-  // GIS 격차 모드 — 자치구별 컬러 원형 히트맵
+  // 6) GIS 격차 모드 — 자치구별 컬러 원형
   React.useEffect(() => {
-    if (!mapInstance.current || !window.L) return;
-    const L = window.L;
-    // 기존 레이어 제거
-    if (gisLayerRef.current) { gisLayerRef.current.remove(); gisLayerRef.current = null; }
+    if (!mapInstance.current || !mapsReady || !window.google) return;
+    const gmaps = window.google.maps;
+    // 기존 GIS 레이어 제거
+    gisCirclesRef.current.forEach(c => c.setMap(null));
+    gisCirclesRef.current = [];
+    gisLabelsRef.current.forEach(m => m.setMap(null));
+    gisLabelsRef.current = [];
     if (!gisMode) return;
-    // 마커 레이어 숨기기
-    if (markerLayerRef.current) markerLayerRef.current.remove();
     if (districtStats.length === 0) return;
-
-    const layer = L.layerGroup().addTo(mapInstance.current);
-    gisLayerRef.current = layer;
 
     const colorFor = (s) => s>=85?'#00BF40' : s>=75?'#FFC700' : s>=65?'#FF7700' : '#FF4242';
     const maxCount = Math.max(...districtStats.map(d => d.schoolCount));
+    const isProvince = ['J10','K10','M10','N10','P10','Q10','R10','S10'].includes(province.code);
+    const baseRadius = isProvince ? 5000 : 1200;
+    const HtmlMarker = ensureHtmlMarkerCtor(gmaps);
 
     districtStats.forEach(d => {
-      // 학교 수 비례 반지름 (300m ~ 1800m), 도 단위는 더 크게
-      const isProvince = ['J10','K10','M10','N10','P10','Q10','R10','S10'].includes(province.code);
-      const baseRadius = isProvince ? 5000 : 1200;
       const radius = baseRadius * (0.4 + 0.6 * (d.schoolCount / maxCount));
       const color = colorFor(d.avgScore);
-      const circle = L.circle([d.lat, d.lng], {
-        radius,
-        color, fillColor: color, fillOpacity: 0.32,
-        weight: 2, opacity: 0.7,
+      const circle = new gmaps.Circle({
+        center: { lat: d.lat, lng: d.lng }, radius,
+        strokeColor: color, strokeOpacity: 0.7, strokeWeight: 2,
+        fillColor: color, fillOpacity: 0.32, clickable: true, map: mapInstance.current,
       });
-      // 자치구 라벨 (이모지 + 점수)
-      const labelHtml = `<div style="
-        background:rgba(255,255,255,0.96); color:#1a1a1a;
-        padding:4px 10px; border-radius:8px; white-space:nowrap;
-        font-weight:800; font-size:11px;
-        box-shadow:0 2px 8px rgba(0,0,0,0.18);
-        border-left:3px solid ${color};
-        pointer-events:none;
-        transform:translate(-50%,-50%);
-      "><span style="color:${color};">●</span> ${d.district} ${d.avgScore}점 <span style="color:#888;font-weight:600;">(${d.schoolCount})</span></div>`;
-      const label = L.marker([d.lat, d.lng], { icon: L.divIcon({ html: labelHtml, className:'', iconSize:[1,1], iconAnchor:[0,0] }), interactive: false });
+      circle.addListener('click', () => setGisDistrict(d));
+      gisCirclesRef.current.push(circle);
 
-      circle.on('click', () => setGisDistrict(d));
-      circle.addTo(layer);
-      label.addTo(layer);
+      const labelHtml = `<div style="background:rgba(255,255,255,0.96);color:#1a1a1a;padding:4px 10px;border-radius:8px;white-space:nowrap;font-weight:800;font-size:11px;box-shadow:0 2px 8px rgba(0,0,0,0.18);border-left:3px solid ${color};pointer-events:none;"><span style="color:${color};">●</span> ${d.district} ${d.avgScore}점 <span style="color:#888;font-weight:600;">(${d.schoolCount})</span></div>`;
+      const lbl = new HtmlMarker({ position: { lat: d.lat, lng: d.lng }, html: labelHtml });
+      lbl.setMap(mapInstance.current);
+      gisLabelsRef.current.push(lbl);
     });
-  }, [gisMode, districtStats, province.code, tweaks.dark]);
+  }, [gisMode, districtStats, province.code, tweaks.dark, mapsReady]);
 
+  // 7) 학교 마커 (HTML OverlayView)
   React.useEffect(() => {
-    if (!mapInstance.current || !schools || !window.L) return;
-    if (gisMode) return; // GIS 모드일 때는 개별 마커 안 그림
-    const L = window.L;
-    if (markerLayerRef.current) markerLayerRef.current.remove();
-    const layer = L.layerGroup().addTo(mapInstance.current);
-    markerLayerRef.current = layer;
+    if (!mapInstance.current || !mapsReady || !schools || !window.google) return;
+    const gmaps = window.google.maps;
+    // 기존 마커 제거
+    markersRef.current.forEach(m => m.setMap(null));
+    markersRef.current = [];
+    if (gisMode) return; // GIS 모드면 개별 마커 안 그림
+
     let filtered = schools;
     if (filter.kind !== '전체') filtered = filtered.filter(s => s.kind === filter.kind);
     if (filter.district !== '전체') filtered = filtered.filter(s => s.district === filter.district);
     if (filter.minScore) filtered = filtered.filter(s => s.score >= filter.minScore);
-    // 전체 학교 표시 (서울 1,325개 등)
-    const limited = filtered;
-    // 마커가 너무 많으면 라벨이 클러터되므로, 필터 적용 후 ≤120개일 때만 학교명 라벨 표시
-    const showLabels = limited.length <= 120;
+
+    const showLabels = filtered.length <= 120;
     const labelDark = tweaks.dark;
-    limited.forEach(sc => {
+    const HtmlMarker = ensureHtmlMarkerCtor(gmaps);
+
+    filtered.forEach(sc => {
       const tier = sc.score >= 85 ? 'high' : sc.score >= 75 ? 'mid' : 'low';
       const colorMap = { high:'#00BF40', mid:'#FFC700', low:'#FF4242' };
       const txtColor = tier === 'mid' ? '#6a4d00' : '#fff';
       const kColor = kindColor(sc.kind);
       const style = tweaks.markerStyle || 'pill';
 
-      // 학교명 라벨 — 학교급별 색상 띠 포함
-      const labelHtml = showLabels ? `<div style="
-        position:absolute; top:100%; left:50%; transform:translateX(-50%);
-        margin-top:3px; padding:2px 7px; border-radius:5px;
-        background:${labelDark?'rgba(28,28,30,0.92)':'rgba(255,255,255,0.96)'};
-        color:${labelDark?'#fff':'#1a1a1a'};
-        font-size:10px; font-weight:700; white-space:nowrap;
-        box-shadow:0 1px 4px rgba(0,0,0,0.18);
-        border-left:2px solid ${kColor};
-        pointer-events:none;
-      ">${sc.name}</div>` : '';
+      const labelHtml = showLabels ? `<div class="gmap-marker-label" style="background:${labelDark?'rgba(28,28,30,0.92)':'rgba(255,255,255,0.96)'};color:${labelDark?'#fff':'#1a1a1a'};border-left:2px solid ${kColor};">${sc.name}</div>` : '';
 
       let core;
       if (style === 'pin') {
@@ -4382,23 +4410,19 @@ function ScreenMap() {
       } else if (style === 'minimal') {
         core = `<div style="width:10px;height:10px;border-radius:9999px;background:${colorMap[tier]};border:1.5px solid white;box-shadow:0 1px 3px rgba(0,0,0,0.28);"></div>`;
       } else {
-        core = `<div style="width:22px;height:22px;border-radius:9999px;background:${colorMap[tier]};color:${txtColor};display:flex;align-items:center;justify-content:center;font-weight:800;font-size:9px;border:1.5px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.22);cursor:pointer;">${sc.score}</div>`;
+        core = `<div style="width:22px;height:22px;border-radius:9999px;background:${colorMap[tier]};color:${txtColor};display:flex;align-items:center;justify-content:center;font-weight:800;font-size:9px;border:1.5px solid white;box-shadow:0 1px 4px rgba(0,0,0,0.22);">${sc.score}</div>`;
       }
 
-      const html = `<div style="position:relative;display:flex;flex-direction:column;align-items:center;">${core}${labelHtml}</div>`;
-      const marker = L.marker([sc.lat, sc.lng], { icon: L.divIcon({
-        html, className:'',
-        iconSize: style==='pin'?[24,30]:style==='minimal'?[10,10]:[22,22],
-        iconAnchor: style==='pin'?[12,27]:style==='minimal'?[5,5]:[11,11],
-      }) });
-      // 라벨이 보이지 않을 때만 hover tooltip
-      if (!showLabels) {
-        marker.bindTooltip(`${sc.name} · ${sc.score}점`, { direction:'top', offset:[0,-10] });
-      }
-      marker.on('click', () => navigate('school', { code: sc.code }));
-      marker.addTo(layer);
+      const html = `<div style="position:relative;display:flex;flex-direction:column;align-items:center;" title="${sc.name} · ${sc.score}점">${core}${labelHtml}</div>`;
+      const m = new HtmlMarker({
+        position: { lat: sc.lat, lng: sc.lng },
+        html,
+        onClick: () => navigate('school', { code: sc.code }),
+      });
+      m.setMap(mapInstance.current);
+      markersRef.current.push(m);
     });
-  }, [schools, filter, tweaks.markerStyle, tweaks.dark, gisMode]);
+  }, [schools, filter, tweaks.markerStyle, tweaks.dark, gisMode, mapsReady]);
 
   const topPicks = React.useMemo(() => {
     if (!schools) return [];
@@ -4408,12 +4432,12 @@ function ScreenMap() {
 
   return (
     <ScreenShell active="map" dark={tweaks.dark}>
-      <div ref={mapRef} style={{ position:'absolute', inset:0, background:'#eef2f3', zIndex:0 }} />
+      <div ref={mapRef} style={{ position:'absolute', inset:0, background:tweaks.dark?'#1c1c1e':'#eef2f3', zIndex:0 }} />
       {dataMode === 'loading' && <div style={{ position:'absolute', top:130, left:16, right:16, background:'white', borderRadius:10, padding:'10px 14px', fontSize:12, fontWeight:600, color:'var(--color-neutral-700)', textAlign:'center', zIndex:6, boxShadow:'var(--shadow-2)' }}>{province.name} 학교 데이터 불러오는 중…</div>}
       {schools && schools.length > 0 && (
         <div style={{ position:'absolute', top:70, left:16, background:'rgba(0,191,64,0.95)', color:'white', borderRadius:9999, padding:'4px 10px', fontSize:10, fontWeight:800, zIndex:6, display:'inline-flex', alignItems:'center', gap:5 }}>
           <span style={{ width:6, height:6, borderRadius:99, background:'white', display:'inline-block', animation:'spin 1.6s linear infinite' }}/>
-          LIVE · NEIS · {province.name} · {schools.length.toLocaleString()}개교
+          LIVE · 학교알리미+NEIS · {province.name} · {schools.length.toLocaleString()}개교
         </div>
       )}
       {dataMode === 'error' && schools && schools.length === 0 && (
@@ -4489,7 +4513,7 @@ function ScreenMap() {
         </div>
       )}
 
-      {/* GIS 자치구 상세 패널 (클릭 시) */}
+      {/* GIS 자치구 상세 패널 */}
       {gisMode && gisDistrict && (
         <div style={{ position:'absolute', bottom:96, left:12, right:12, zIndex:7, background: tweaks.dark?'#1c1c1e':'white', borderRadius:16, padding:16, boxShadow:'var(--shadow-3)', color: tweaks.dark?'#fff':'inherit' }}>
           <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:10 }}>
@@ -4540,8 +4564,6 @@ function ScreenMap() {
               </div>
             </div>
           </div>
-
-          {/* 자동 인사이트 */}
           {gisDistrict.multiPct >= 10 && gisDistrict.i18nPct < 15 && (
             <div style={{ background:'rgba(255,66,66,0.12)', borderLeft:'3px solid var(--color-red-600)', borderRadius:6, padding:'8px 10px', marginBottom:6 }}>
               <div style={{ fontSize:10, fontWeight:800, color:'var(--color-red-600)' }}>⚠ 사각지대 발견</div>
@@ -4555,9 +4577,9 @@ function ScreenMap() {
         </div>
       )}
 
-      {/* 커스텀 줌 컨트롤 — 우측 중앙 */}
+      {/* 커스텀 줌 컨트롤 */}
       <div style={{ position:'absolute', right:12, top:'50%', transform:'translateY(-50%)', zIndex:6, display:'flex', flexDirection:'column', gap:6 }}>
-        <button onClick={() => mapInstance.current?.zoomIn()} title="확대" style={{
+        <button onClick={() => mapInstance.current?.setZoom((mapInstance.current.getZoom()||11)+1)} title="확대" style={{
           width:38, height:38, borderRadius:10, border:'none',
           background: tweaks.dark?'rgba(28,28,30,0.92)':'rgba(255,255,255,0.96)',
           color: tweaks.dark?'#fff':'#1a1a1a',
@@ -4565,7 +4587,7 @@ function ScreenMap() {
           boxShadow:'var(--shadow-2)',
           display:'flex', alignItems:'center', justifyContent:'center',
         }}>＋</button>
-        <button onClick={() => mapInstance.current?.zoomOut()} title="축소" style={{
+        <button onClick={() => mapInstance.current?.setZoom((mapInstance.current.getZoom()||11)-1)} title="축소" style={{
           width:38, height:38, borderRadius:10, border:'none',
           background: tweaks.dark?'rgba(28,28,30,0.92)':'rgba(255,255,255,0.96)',
           color: tweaks.dark?'#fff':'#1a1a1a',
@@ -4573,7 +4595,7 @@ function ScreenMap() {
           boxShadow:'var(--shadow-2)',
           display:'flex', alignItems:'center', justifyContent:'center',
         }}>−</button>
-        <button onClick={() => mapInstance.current?.flyTo(province.center, province.zoom, { duration: 0.6 })} title="기본 위치" style={{
+        <button onClick={() => { if (mapInstance.current) { mapInstance.current.panTo({ lat: province.center[0], lng: province.center[1] }); mapInstance.current.setZoom(province.zoom||11); } }} title="기본 위치" style={{
           width:38, height:38, borderRadius:10, border:'none',
           background: tweaks.dark?'rgba(28,28,30,0.92)':'rgba(255,255,255,0.96)',
           color: tweaks.dark?'#fff':'#1a1a1a',
@@ -4587,9 +4609,7 @@ function ScreenMap() {
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={tweaks.dark?'#fff':'var(--color-neutral-700)'} strokeWidth="2"><circle cx="11" cy="11" r="8"/><path d="M21 21l-6-6" strokeLinecap="round"/></svg>
           <span style={{ fontSize:13, color:tweaks.dark?'rgba(255,255,255,0.6)':'var(--color-neutral-500)', fontWeight:500 }}>학교명 또는 지역으로 검색</span>
         </div>
-        {/* 시도 + 자치구 선택 — 별도 행 (드롭다운이 클립되지 않도록) */}
         <div style={{ position:'relative', marginTop:8, display:'flex', gap:6, alignItems:'center' }}>
-          {/* 시도교육청 선택 */}
           <div style={{ position:'relative', flexShrink:0 }}>
             <span onClick={() => { setProvinceOpen(o => !o); setDistrictOpen(false); }} style={{
               display:'inline-flex', alignItems:'center', gap:4, padding:'7px 12px', borderRadius:9999,
@@ -4632,8 +4652,6 @@ function ScreenMap() {
               </>
             )}
           </div>
-
-          {/* 자치구 선택 — 자체 position:relative 래퍼 */}
           <div style={{ position:'relative', flexShrink:0 }}>
             <span onClick={() => { setDistrictOpen(o => !o); setProvinceOpen(false); }} style={{
               display:'inline-flex', alignItems:'center', gap:4, padding:'7px 12px', borderRadius:9999,
@@ -4679,8 +4697,6 @@ function ScreenMap() {
             )}
           </div>
         </div>
-
-        {/* 학교급 칩 — 자체 행 */}
         <div style={{ display:'flex', gap:6, marginTop:8, overflowX:'auto', scrollbarWidth:'none' }}>
           {['전체','초등학교','중학교','고등학교'].map(k => (
             <span key={k} className="tab-pill" data-active={filter.kind===k?'true':'false'} onClick={() => setFilter({...filter, kind:k})} style={{ cursor:'pointer', flexShrink:0 }}>{k==='초등학교'?'초':k==='중학교'?'중':k==='고등학교'?'고':'전체'}</span>
@@ -4690,6 +4706,7 @@ function ScreenMap() {
     </ScreenShell>
   );
 }
+
 
 // ═══════════════════════════════════════════════════════════════
 // Screen: School Detail
