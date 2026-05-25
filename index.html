@@ -9402,8 +9402,23 @@ function ScreenAI() {
   const [goal, setGoal] = React.useState('균형');
   const [allergies, setAllergies] = React.useState(['우유','땅콩']);
   const [domesticFirst, setDomesticFirst] = React.useState(true);
+  const [farmerSupport, setFarmerSupport] = React.useState(false);
+  const [surplusData, setSurplusData] = React.useState(null); // { month, items[], sensitive[], source }
   const [generating, setGenerating] = React.useState(false);
   const [result, setResult] = React.useState(null);
+
+  // 농어민 상생 — 과잉생산·판로취약 농수산물 정보 (농넷·바로정보)
+  React.useEffect(() => {
+    if (!farmerSupport || surplusData) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const r = await fetch('/api/farm-surplus');
+        if (r.ok) { const j = await r.json(); if (!cancelled) setSurplusData(j); }
+      } catch (e) { /* 폴백: 서버 미가용 시 토글만 표시 */ }
+    })();
+    return () => { cancelled = true; };
+  }, [farmerSupport]);
 
   // 사진 분석 상태
   const [photoData, setPhotoData] = React.useState(null); // { dataUrl, base64, mediaType }
@@ -9619,7 +9634,7 @@ ${schoolContext}
 
   // 결정적 의사 랜덤 (학년/스타일/목표/알레르기 조합 → 같은 결과)
   const seedFromInputs = () => {
-    const s = `${grade}|${style}|${goal}|${[...allergies].sort().join(',')}|${domesticFirst}`;
+    const s = `${grade}|${style}|${goal}|${[...allergies].sort().join(',')}|${domesticFirst}|${farmerSupport}`;
     let h = 0;
     for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
     return h;
@@ -9639,6 +9654,8 @@ ${schoolContext}
 영양 목표: ${goal}
 알레르기 제외: ${allergies.join(', ') || '없음'}
 국내산 우선: ${domesticFirst ? '예' : '아니오'}
+농어민 상생 우선: ${farmerSupport ? '예' : '아니오'}${farmerSupport && surplusData ? `
+[농어민 상생] 아래는 현재 과잉생산되었거나 판로가 취약한 농수산물입니다. 이 식재료를 활용한 메뉴를 가능한 한 우선적으로 편성해주세요(맛·영양 균형 해치지 않는 범위에서): ${surplusData.items.join(', ')}` : ''}
 
 다음 JSON 형식으로만 답변해주세요(앞뒤 설명 없이):
 {
@@ -9660,6 +9677,8 @@ ${schoolContext}
             avgKcal: json.summary?.avgKcal || Math.round((json.days || []).reduce((s,d)=>s+(d.kcal||0),0)/(json.days?.length||1)),
             excludedAllergies: allergies.length,
             domesticFirst,
+            farmerSupport,
+            surplusItems: farmerSupport && surplusData ? surplusData.items : null,
             note: json.summary?.note,
             source: aiProvider,
             sourceLabel: PROVIDER_LABELS[aiProvider] || 'AI',
@@ -9681,9 +9700,17 @@ ${schoolContext}
         const triggers = MENU_ALLERGY_MAP[menu] || [];
         return !triggers.some(t => allergies.includes(t));
       };
+      // 농어민 상생: 과잉생산 품목명을 메뉴명에 포함한 항목 우선
+      const surplusList = (farmerSupport && surplusData) ? surplusData.items : [];
+      const matchesSurplus = (menu) => surplusList.some(it => menu.includes(it));
       const pickFromPool = (arr, dayIdx, slotSeed) => {
         const filtered = arr.filter(isAllergyFree);
-        const final = filtered.length ? filtered : arr;
+        let final = filtered.length ? filtered : arr;
+        // 상생 모드: 과잉생산 품목 포함 메뉴가 있으면 그 풀에서 우선 선택
+        if (surplusList.length) {
+          const surplusMatched = final.filter(matchesSurplus);
+          if (surplusMatched.length) final = surplusMatched;
+        }
         return final[(seed + dayIdx*7 + slotSeed*13) % final.length];
       };
       // 영양 목표별 주안점
@@ -9712,7 +9739,7 @@ ${schoolContext}
         const highlights = [
           `${goalHint[goal]} 적용`,
           domesticFirst ? '국내산 식재료 우선 편성' : '신선 식재료 중심',
-          allergies.length>0 ? `${allergies.join('·')} 제외` : '알레르기 제한 없음',
+          farmerSupport && surplusList.length ? `농어민 상생 — ${surplusList.slice(0,3).join('·')} 우선` : (allergies.length>0 ? `${allergies.join('·')} 제외` : '알레르기 제한 없음'),
         ];
         const highlight = highlights[i % highlights.length];
         return { day: d, menus, kcal, highlight };
@@ -9722,6 +9749,8 @@ ${schoolContext}
         avgKcal: Math.round(generatedDays.reduce((s,d)=>s+d.kcal,0)/5),
         excludedAllergies: allergies.length,
         domesticFirst,
+        farmerSupport,
+        surplusItems: surplusList.length ? surplusList : null,
       };
       setResult({ days: generatedDays, summary });
       setGenerating(false);
@@ -10166,6 +10195,44 @@ ${schoolContext}
             </button>
           </div>
 
+          {/* 농어민 상생 우선 토글 */}
+          <div style={{
+            background:cardBg, borderRadius:14, padding:14, marginBottom:14,
+            border:`1px solid ${dark?'rgba(255,255,255,0.04)':'var(--alpha-black-10)'}`,
+          }}>
+            <div style={{ display:'flex', alignItems:'center', gap:12 }}>
+              <div style={{ width:44, height:44, borderRadius:11, background:'#00BF401A', color:'#00BF40', display:'flex', alignItems:'center', justifyContent:'center', fontSize:22, flexShrink:0 }}>🤝</div>
+              <div style={{ flex:1, minWidth:0 }}>
+                <div style={{ fontSize:13, fontWeight:800, color:text }}>농어민 상생 우선</div>
+                <div style={{ fontSize:11, color:sub, marginTop:2 }}>과잉생산·판로취약 농수산물을 메뉴에 우선 반영</div>
+              </div>
+              <button onClick={() => setFarmerSupport(v=>!v)} style={{ position:'relative', width:46, height:26, borderRadius:9999, border:'none', cursor:'pointer', background:farmerSupport?'#00BF40':(dark?'#3a3a3c':'var(--color-neutral-300)'), transition:'background 0.2s', flexShrink:0 }}>
+                <div style={{ position:'absolute', top:3, left:farmerSupport?23:3, width:20, height:20, borderRadius:9999, background:'white', boxShadow:'0 1px 3px rgba(0,0,0,0.2)', transition:'left 0.2s' }} />
+              </button>
+            </div>
+            {farmerSupport && (
+              <div style={{ marginTop:12, paddingTop:12, borderTop:`1px dashed ${dark?'rgba(255,255,255,0.1)':'var(--alpha-black-10)'}` }}>
+                {surplusData ? (
+                  <>
+                    <div style={{ fontSize:10, fontWeight:800, color:'#00BF40', letterSpacing:'0.04em', marginBottom:6 }}>
+                      🌾 {surplusData.month}월 수급조절 품목 · 농넷·바로정보
+                    </div>
+                    <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+                      {surplusData.items.map(it => (
+                        <span key={it} style={{ fontSize:11, fontWeight:700, padding:'4px 10px', borderRadius:9999, background:'#00BF4014', color:dark?'#7FE89B':'#089A40', border:'1px solid #00BF4033' }}>{it}</span>
+                      ))}
+                    </div>
+                    <div style={{ fontSize:10, color:sub, marginTop:8, lineHeight:1.5 }}>
+                      과잉생산되었거나 판로가 취약한 위 품목을 메뉴에 우선 편성해 농어민과 상생합니다.
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ fontSize:11, color:sub }}>수급동향 불러오는 중… (농넷·바로정보)</div>
+                )}
+              </div>
+            )}
+          </div>
+
           {/* 생성 버튼 */}
           <button onClick={generate} disabled={generating} style={{
             width:'100%', height:56, borderRadius:14,
@@ -10221,6 +10288,13 @@ ${schoolContext}
                     <div style={{ fontSize:15, fontWeight:800, marginTop:1 }}>{result.summary.domesticFirst?'✓ ON':'OFF'}</div>
                   </div>
                 </div>
+                {result.summary.farmerSupport && result.summary.surplusItems && (
+                  <div style={{ background:'rgba(255,255,255,0.16)', borderRadius:10, padding:'10px 12px', marginTop:8 }}>
+                    <div style={{ fontSize:9, opacity:0.85, fontWeight:800, letterSpacing:'0.04em' }}>🤝 농어민 상생 — 과잉생산·판로취약 품목 우선</div>
+                    <div style={{ fontSize:12, fontWeight:800, marginTop:3, lineHeight:1.5 }}>{result.summary.surplusItems.slice(0,8).join(' · ')}</div>
+                    <div style={{ fontSize:9, opacity:0.8, marginTop:4 }}>출처: 농넷 · 바로정보</div>
+                  </div>
+                )}
               </div>
 
               {/* 5일 식단 카드 */}

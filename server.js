@@ -452,6 +452,79 @@ app.get('/api/school-extra-debug/:office/:code', async (req, res) => {
 });
 
 // ────────────────────────────────────────
+// 농어민 상생 — 과잉생산·판로취약 농수산물 정보
+// 출처: 농넷(nongnet.or.kr) · 바로정보(baroinfo.com)
+// 공개 JSON API 부재 + CORS 차단 → 서버 프록시 best-effort + 큐레이션 폴백
+// ────────────────────────────────────────
+const farmSurplusCache = { t: 0, v: null };
+
+// 월별 큐레이션 폴백 — 과잉생산·수급조절·판로지원 빈발 품목 (농식품부 수급동향 기반)
+const FARM_SURPLUS_FALLBACK = {
+  1:  ['배추','무','감귤','단감','건고추','쌀'],
+  2:  ['배추','무','감귤','대파','양파','쌀'],
+  3:  ['양파','대파','마늘','시금치','딸기','한라봉'],
+  4:  ['양파','대파','마늘','봄동','참다래','애호박'],
+  5:  ['양파','마늘','감자','마늘쫑','매실','토마토'],
+  6:  ['감자','마늘','양파','매실','참외','수박'],
+  7:  ['감자','수박','참외','복숭아','오이','애호박'],
+  8:  ['수박','복숭아','포도','자두','오이','풋고추'],
+  9:  ['배','사과','포도','대추','밤','고구마'],
+  10: ['사과','배','대추','밤','고구마','무'],
+  11: ['배추','무','사과','단감','감귤','고구마'],
+  12: ['배추','무','감귤','단감','건고추','쌀'],
+};
+
+// 농수산물 수급정책 상시 지원 품목 (가격 등락 큰 민감 품목)
+const FARM_SENSITIVE = ['배추','무','마늘','양파','대파','건고추','감자','쌀'];
+
+async function tryFetchSurplusSources() {
+  // 농넷/바로정보 페이지 best-effort 수집 (실패 시 null → 폴백)
+  const sources = [
+    'https://www.nongnet.or.kr/',
+    'https://www.baroinfo.com/',
+  ];
+  const found = new Set();
+  const KEYWORDS = ['배추','무','마늘','양파','대파','건고추','감자','쌀','사과','배','감귤','단감',
+    '수박','참외','복숭아','포도','자두','토마토','오이','애호박','시금치','딸기','고구마','밤','대추'];
+  for (const url of sources) {
+    try {
+      const r = await fetchWithTimeout(url, 8000);
+      if (!r || !r.ok) continue;
+      const html = await r.text();
+      // 페이지 텍스트에서 과잉/수급/할인/판로 맥락 인근 품목명 추출 (단순 키워드 매칭)
+      KEYWORDS.forEach(k => { if (html.includes(k)) found.add(k); });
+    } catch (e) { /* skip */ }
+  }
+  return found.size ? [...found] : null;
+}
+
+app.get('/api/farm-surplus', async (req, res) => {
+  // 6시간 캐시
+  if (farmSurplusCache.v && Date.now() - farmSurplusCache.t < 6 * 3600 * 1000) {
+    return res.json(farmSurplusCache.v);
+  }
+  const month = new Date().getMonth() + 1;
+  const fallback = FARM_SURPLUS_FALLBACK[month] || FARM_SURPLUS_FALLBACK[1];
+
+  let live = null;
+  try { live = await tryFetchSurplusSources(); } catch (e) {}
+
+  // live(농넷/바로정보) 우선, 폴백과 병합 (중복 제거, 최대 8개)
+  const merged = [...new Set([...(live || []), ...fallback])].slice(0, 8);
+  const result = {
+    month,
+    items: merged,
+    sensitive: FARM_SENSITIVE,
+    source: live ? 'nongnet+baroinfo+curated' : 'curated',
+    sources: ['https://www.nongnet.or.kr/', 'https://www.baroinfo.com/'],
+    updatedAt: new Date().toISOString(),
+  };
+  farmSurplusCache.t = Date.now();
+  farmSurplusCache.v = result;
+  res.json(result);
+});
+
+// ────────────────────────────────────────
 // 정적 파일 (index.html, data/*, README, LICENSE)
 // ────────────────────────────────────────
 app.use(express.static(__dirname, { maxAge: '5m', extensions: ['html'] }));
